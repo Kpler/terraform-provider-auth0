@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/auth0/terraform-provider-auth0/internal/auth0/networkacl"
@@ -145,6 +146,23 @@ func New() *schema.Provider {
 				DefaultFunc: schema.EnvDefaultFunc("AUTH0_CUSTOM_DOMAIN_HEADER", nil),
 				Description: "When specified, this header is added to requests targeting a set of pre-defined whitelisted URLs " +
 					"Global setting overrides all resource specific `custom_domain_header` value",
+			},
+			"max_api_capacity": {
+				Type:        schema.TypeInt,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("AUTH0_MAX_API_CAPACITY", 100),
+				ValidateFunc: func(val interface{}, key string) (warns []string, errs []error) {
+					v := val.(int)
+					if v < 1 || v > 100 {
+						errs = append(errs, fmt.Errorf("%q must be between 1 and 100, got: %d", key, v))
+					}
+					return
+				},
+				Description: "Sets what percentage of capacity the provider can use of the total rate limit " +
+					"capacity while making calls to the Auth0 management API endpoints. Auth0 API operates with " +
+					"rate limits per endpoint. See Auth0 Rate Limit Policy: " +
+					"https://auth0.com/docs/troubleshoot/product-lifecycle/rate-limit-policy. " +
+					"It can also be sourced from the `AUTH0_MAX_API_CAPACITY` environment variable.",
 			},
 		},
 		ResourcesMap: map[string]*schema.Resource{

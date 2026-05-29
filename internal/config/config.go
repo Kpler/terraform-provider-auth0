@@ -24,6 +24,9 @@ import (
 	"github.com/zalando/go-keyring"
 
 	"github.com/auth0/terraform-provider-auth0/internal/mutex"
+	"github.com/auth0/terraform-provider-auth0/internal/ratelimit"
+	"github.com/auth0/terraform-provider-auth0/internal/transport"
+	"github.com/hashicorp/go-hclog"
 )
 
 const providerName = "Terraform-Provider-Auth0"    // #nosec G101
@@ -68,6 +71,7 @@ type authConfig struct {
 	clientAssertionPrivateKey string
 	clientAssertionSigningAlg string
 	customDomainHeader        string
+	maxAPICapacity            int
 }
 
 // ConfigureProvider will configure the *schema.Provider so that
@@ -83,6 +87,7 @@ func ConfigureProvider(terraformVersion *string) schema.ConfigureContextFunc {
 			clientAssertionPrivateKey: data.Get("client_assertion_private_key").(string),
 			clientAssertionSigningAlg: data.Get("client_assertion_signing_alg").(string),
 			customDomainHeader:        data.Get("custom_domain_header").(string),
+			maxAPICapacity:            data.Get("max_api_capacity").(int),
 		}
 
 		domain := data.Get("domain").(string)
@@ -160,7 +165,7 @@ func ConfigureProvider(terraformVersion *string) schema.ConfigureContextFunc {
 			management.WithUserAgent(userAgent(terraformVersion)),
 			management.WithAuth0ClientEnvEntry(providerName, version),
 			management.WithNoRetries(),
-			management.WithClient(customClientWithRetries()),
+			management.WithClient(customClientWithRetries(config.maxAPICapacity, debug)),
 			management.WithCustomDomainHeader(config.customDomainHeader))
 
 		if err != nil {
@@ -305,13 +310,32 @@ func authenticationOption(cfg authConfig) management.Option {
 	}
 }
 
-func customClientWithRetries() *http.Client {
+func customClientWithRetries(maxAPICapacity int, debug bool) *http.Client {
+	baseTransport := retryableErrorTransport(http.DefaultTransport)
+	
+	// Apply rate limiting if maxAPICapacity is less than 100%
+	if maxAPICapacity > 0 && maxAPICapacity < 100 {
+		// Create a simple logger for the transport
+		logger := hclog.New(&hclog.LoggerOptions{
+			Name:  "auth0-rate-limiter",
+			Level: hclog.Info,
+		})
+		if debug {
+			logger.SetLevel(hclog.Debug)
+		}
+		
+		rateLimitManager, err := ratelimit.NewRateLimitManager(maxAPICapacity)
+		if err != nil {
+			// If we can't create the rate limit manager, fall back to basic rate limiting
+			logger.Error("Failed to create rate limit manager, falling back to basic rate limiting", "error", err)
+		} else {
+			logger.Info(fmt.Sprintf("Auth0 provider running with max_api_capacity configuration at %d%%", maxAPICapacity))
+			baseTransport = transport.NewGovernedTransport(baseTransport, rateLimitManager, logger)
+		}
+	}
+	
 	client := &http.Client{
-		Transport: rateLimitTransport(
-			retryableErrorTransport(
-				http.DefaultTransport,
-			),
-		),
+		Transport: rateLimitTransport(baseTransport),
 	}
 
 	return client
